@@ -6,6 +6,7 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser as SqlParser;
 use std::fs;
 
+// コマンドの引数やオプション
 #[derive(ClapParser, Debug)]
 #[clap(about, version, author)]
 struct Args {
@@ -17,12 +18,12 @@ struct Args {
     uri: String,
 
     /// Check the SQL file
-    #[clap(short, long)]
-    file: bool,
+    #[clap(short = 'f', long = "file")]
+    is_file: bool,
 
     /// Show parse results
-    #[clap(long)]
-    debug: bool,
+    #[clap(long = "debug")]
+    is_debug: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -46,37 +47,37 @@ struct OpaResponse {
     result: OpaResult,
 }
 
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
-
-    let contents = if args.file {
-        fs::read_to_string(args.value.clone())
-            .unwrap_or_else(|_| panic!("Unable to read the file {}", args.value))
+// 引数またはファイルから文字列を取得
+fn read_contents(value: String, is_file: bool) -> String {
+    let contents = if is_file {
+        fs::read_to_string(&value).unwrap_or_else(|_| panic!("Unable to read the file {}", &value))
     } else {
-        args.value
+        value
     };
 
-    let uri = args.uri;
-
-    let dialect = GenericDialect {};
-
-    let without_bom = if contents.chars().next().unwrap() as u64 != 0xfeff {
-        contents.as_str()
+    // BOMを無視して返す
+    return if contents.chars().next().unwrap() as u64 != 0xfeff {
+        contents
     } else {
         let mut chars = contents.chars();
         chars.next();
-        chars.as_str()
+        String::from(chars.as_str())
     };
+}
 
-    let ast_list = SqlParser::parse_sql(&dialect, without_bom).unwrap();
-    if args.debug {
+// SQLをパースした結果を取得
+fn parse(contents: String, is_debug: bool) -> Vec<ParseResult> {
+    let dialect = GenericDialect {};
+    let ast_list = SqlParser::parse_sql(&dialect, contents.as_str()).unwrap();
+
+    if is_debug {
         println!(
             "Parse Result: {}",
             serde_json::to_string_pretty(&ast_list).unwrap()
         );
     }
 
+    // パースするSQLとパース結果をまとめる
     let mut result: Vec<ParseResult> = Vec::new();
     for ast in ast_list.iter() {
         result.push(ParseResult {
@@ -85,8 +86,15 @@ async fn main() {
         });
     }
 
+    result
+}
+
+// OPAのサーバーにリクエストした結果を取得
+async fn opa_request(uri: String, input: Vec<ParseResult>) -> OpaResponse {
     let client = Client::new();
-    let req_body = serde_json::to_string(&OpaRequest { input: result }).unwrap();
+
+    let req_body = serde_json::to_string(&OpaRequest { input }).unwrap();
+
     let req = Request::builder()
         .method(Method::POST)
         .uri(uri)
@@ -94,21 +102,34 @@ async fn main() {
         .body(Body::from(req_body))
         .unwrap();
 
-    let resp = client.request(req).await.unwrap();
-    if resp.status() != StatusCode::OK {
-        panic!("Responses other than HTTP code 200: {}", resp.status());
+    let res = client.request(req).await.unwrap();
+    if res.status() != StatusCode::OK {
+        panic!("Responses other than HTTP code 200: {}", res.status());
     }
 
-    let bytes = body::to_bytes(resp.into_body()).await.unwrap();
-    let resp_body = String::from_utf8(bytes.to_vec()).unwrap();
+    // レスポンスボディの取得
+    let bytes = body::to_bytes(res.into_body()).await.unwrap();
+    let res_body = String::from_utf8(bytes.to_vec()).unwrap();
 
-    let json: OpaResponse = serde_json::from_str(&resp_body).unwrap();
+    // レスポンスボディをデシリアライズ
+    serde_json::from_str(&res_body).unwrap()
+}
 
-    if json.result.deny.len() > 0 {
+#[tokio::main]
+async fn main() {
+    let args = Args::parse();
+
+    let contents = read_contents(args.value, args.is_file);
+
+    let parse_result = parse(contents, args.is_debug);
+
+    let json = opa_request(args.uri, parse_result).await;
+
+    if json.result.deny.is_empty() {
+        println!("There is no problem with SQL");
+    } else {
         for deny in json.result.deny.iter() {
             println!("{}", deny);
         }
-    } else {
-        println!("There is no problem with SQL");
     }
 }
