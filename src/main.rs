@@ -27,6 +27,7 @@ struct Args {
 }
 
 #[derive(Serialize, Debug)]
+#[cfg_attr(test, derive(Deserialize, PartialEq))]
 struct ParseResult {
     query: String,
     ast: Statement,
@@ -131,5 +132,55 @@ async fn main() {
         for deny in json.result.deny.iter() {
             println!("{}", deny);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parse;
+    use crate::read_contents;
+    use crate::ParseResult;
+    use std::fs;
+    use std::io::Write;
+
+    #[test]
+    fn tset_read_contents() {
+        let sql = "SELECT a, b FROM tbl LIMIT 10;";
+        let sql = sql.to_string();
+        let filename = "test.sql";
+        let filename = filename.to_string();
+
+        // 引数の文字列取得
+        let arg_result = read_contents(sql.clone(), false);
+        assert_eq!(arg_result, sql);
+
+        // ファイルの文字列取得
+        let mut file = fs::File::create(&filename).unwrap();
+        file.write_all(sql.as_bytes()).unwrap();
+        let file_result = read_contents(filename.clone(), true);
+        assert_eq!(file_result, sql);
+        fs::remove_file(&filename).unwrap();
+
+        // ファイルの文字列取得（BOM付）
+        let bom = '\u{FEFF}';
+        let bom = bom.to_string();
+        let bom = bom.as_bytes();
+        let mut file = fs::File::create(&filename).unwrap();
+        file.write_all(bom).unwrap();
+        file.write_all(sql.as_bytes()).unwrap();
+        let bom_result = read_contents(filename.clone(), true);
+        assert_eq!(bom_result, sql);
+        fs::remove_file(&filename).unwrap();
+    }
+
+    #[test]
+    fn test_parse() {
+        let contents = "DELETE FROM test";
+        let contents = contents.to_string();
+        let expected = r#"{"query": "DELETE FROM test", "ast": {"Delete": {"table_name": [{"value": "test", "quote_style": null}], "selection": null}}}"#;
+        let expected: Vec<ParseResult> = vec![serde_json::from_str(expected).unwrap()];
+        let result = parse(contents, false);
+
+        assert_eq!(result, expected);
     }
 }
