@@ -21,7 +21,7 @@ struct Args {
     #[clap(short = 'f', long = "file")]
     is_file: bool,
 
-    /// Show parse results
+    /// Show parse results and OPA response
     #[clap(long = "debug")]
     is_debug: bool,
 }
@@ -71,13 +71,6 @@ fn parse(contents: String, is_debug: bool) -> Vec<ParseResult> {
     let dialect = GenericDialect {};
     let ast_list = SqlParser::parse_sql(&dialect, contents.as_str()).unwrap();
 
-    if is_debug {
-        println!(
-            "Parse Result: {}",
-            serde_json::to_string_pretty(&ast_list).unwrap()
-        );
-    }
-
     // パースするSQLとパース結果をまとめる
     let mut result: Vec<ParseResult> = Vec::new();
     for ast in ast_list.iter() {
@@ -87,11 +80,15 @@ fn parse(contents: String, is_debug: bool) -> Vec<ParseResult> {
         });
     }
 
+    if is_debug {
+        println!("Parse Result: {}", serde_json::to_string(&result).unwrap());
+    }
+
     result
 }
 
 // OPAのサーバーにリクエストした結果を取得
-async fn opa_request(uri: String, input: Vec<ParseResult>) -> OpaResponse {
+async fn opa_request(uri: String, input: Vec<ParseResult>, is_debug: bool) -> OpaResponse {
     let client = Client::new();
 
     let req_body = serde_json::to_string(&OpaRequest { input }).unwrap();
@@ -112,6 +109,10 @@ async fn opa_request(uri: String, input: Vec<ParseResult>) -> OpaResponse {
     let bytes = body::to_bytes(res.into_body()).await.unwrap();
     let res_body = String::from_utf8(bytes.to_vec()).unwrap();
 
+    if is_debug {
+        println!("OPA Response: {}", &res_body);
+    }
+
     // レスポンスボディをデシリアライズ
     serde_json::from_str(&res_body).unwrap()
 }
@@ -124,7 +125,7 @@ async fn main() {
 
     let parse_result = parse(contents, args.is_debug);
 
-    let json = opa_request(args.uri, parse_result).await;
+    let json = opa_request(args.uri, parse_result, args.is_debug).await;
 
     if json.result.deny.is_empty() {
         println!("There is no problem with SQL");
