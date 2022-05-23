@@ -10,7 +10,7 @@ use std::fs;
 #[derive(ClapParser, Debug)]
 #[clap(about, version, author)]
 struct Args {
-    #[clap(value_name = "SQL")]
+    #[clap()]
     value: String,
 
     /// Specify OPA URI
